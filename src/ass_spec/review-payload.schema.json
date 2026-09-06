@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assayer.dev/ass-spec/review-payload.schema.json",
+  "title": "ass-spec checkpoint review payload",
+  "description": "Contract for the opaque payload the ass-spec plugin accepts in checkpoint_review, published to the Agent via the platform tool description.",
+  "type": "object",
+  "properties": {
+    "checklist_review": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["check_id", "status", "note", "evidence_refs"],
+        "properties": {
+          "check_id": { "type": "string", "pattern": "^CHK-(0[1-9]|1[0-8])$" },
+          "status": { "enum": ["PASS", "REWORK", "ESCALATE", "UNVERIFIED"] },
+          "note": { "type": "string", "minLength": 1 },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "description": "References to the frozen source sections (sourceChunks) that back this checklist row. Copy the five fields verbatim from the matching sourceChunks entry; never invent or re-derive them, and never substitute the EvidenceRecord evidenceId (that is a different identifier namespace).",
+            "items": {
+              "type": "object",
+              "required": ["source_chunk_id", "start_line", "end_line", "source_digest", "document_path"],
+              "properties": {
+                "source_chunk_id": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].source_chunk_id." },
+                "start_line": { "type": "integer", "minimum": 1, "description": "Copied verbatim from sourceChunks[].start_line." },
+                "end_line": { "type": "integer", "minimum": 1, "description": "Copied verbatim from sourceChunks[].end_line." },
+                "source_digest": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].source_digest." },
+                "document_path": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].document_path." }
+              }
+            }
+          },
+          "applicability": { "enum": ["APPLICABLE", "NOT_APPLICABLE", "CONDITIONAL", "UNVERIFIED"] },
+          "finding_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "decisions": { "type": "array" },
+    "cross_document_review": { "type": "array" }
+  }
+}

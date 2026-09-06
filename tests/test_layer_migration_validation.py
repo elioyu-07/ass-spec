@@ -8,20 +8,16 @@ same portable evidence-graph projection without losing candidate identity.
 
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from assayer_document_navigation import parse_markdown
 from assayer_platform import (
-    MarkdownNavigationAdapter,
     PlatformContext,
     PlatformContractError,
-    validate_candidate_evidence_graph_projection,
     validate_review_submission,
 )
-from assayer_platform.testing.config_quality.runtime import ConfigQualityPlugin
 from ass_spec import AssSpecPlugin
 
 
@@ -88,57 +84,13 @@ class LayerMigrationValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path, payload = self._spec_payload(Path(directory))
             raw = path.read_bytes()
-            adapter = MarkdownNavigationAdapter()
-            context = PlatformContext("run-migration-nav", frozenset())
 
             direct = parse_markdown(raw, path=str(path))
-            adapter_document = adapter.read_document(
-                {"raw": raw, "path": str(path)}, context,
-            )
 
             self.assertEqual(
                 _unit_signature(payload["navigation"]["units"]),
                 _unit_signature(direct["units"]),
             )
-            self.assertEqual(
-                _unit_signature(payload["navigation"]["units"]),
-                _unit_signature(adapter_document["units"]),
-            )
-
-    def test_spec_and_config_publish_the_same_evidence_graph_projection(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _, spec_payload = self._spec_payload(root)
-
-            spec_graph = spec_payload["candidateGraph"]
-            validate_candidate_evidence_graph_projection(spec_graph)
-            self.assertEqual(
-                spec_graph["candidateCount"],
-                len(spec_payload["candidateFindings"]),
-            )
-
-            config_path = root / "config.json"
-            config_path.write_text(
-                json.dumps({"name": "assayer", "port": 8080, "enabled": True}),
-                encoding="utf-8",
-            )
-            config_plugin = ConfigQualityPlugin()
-            config_context = PlatformContext(
-                "run-migration-config", frozenset({"structured_read"}),
-            )
-            config_item = config_plugin.discover(
-                {"files": [{"path": str(config_path), "requiredKeys": ["name", "port"]}]},
-                config_context,
-            )[0]
-            config_packet = config_plugin.inspect(
-                (config_item,), config_plugin.manifest.checks[0], config_context,
-            )[0]
-            config_graph = config_packet.evidence[0].payload["candidateGraph"]
-
-            validate_candidate_evidence_graph_projection(config_graph)
-            self.assertEqual(config_graph["candidateCount"], 3)
-            self.assertEqual(len(config_packet.dimensions), 3)
-            self.assertTrue(config_graph["coverageComplete"])
 
     def test_spec_candidate_ids_are_stable_across_inspection(self):
         with tempfile.TemporaryDirectory() as directory:

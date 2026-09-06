@@ -32,6 +32,10 @@ ASS_SPEC_SCOPE_SCHEMA = json.loads(
     Path(__file__).with_name("scope.schema.json").read_text(encoding="utf-8")
 )
 
+ASS_SPEC_REVIEW_PAYLOAD_SCHEMA = json.loads(
+    Path(__file__).with_name("review-payload.schema.json").read_text(encoding="utf-8")
+)
+
 
 registration = PluginRegistration(
     AssSpecPlugin.manifest,
@@ -41,6 +45,7 @@ registration = PluginRegistration(
     result_features=frozenset({"evidence_graph"}),
     execution_modes=frozenset({"interactive"}),
     scope_schema=ASS_SPEC_SCOPE_SCHEMA,
+    review_payload_schema=ASS_SPEC_REVIEW_PAYLOAD_SCHEMA,
 )
 
 
@@ -54,5 +59,6 @@ __all__ = [
     "load_evaluation_corpus",
     "validate_evaluation_corpus",
     "ASS_SPEC_SCOPE_SCHEMA",
+    "ASS_SPEC_REVIEW_PAYLOAD_SCHEMA",
     "registration",
 ]

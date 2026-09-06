@@ -19,7 +19,7 @@ from assayer_platform.contract import (
 )
 from assayer_platform.registry import load_plugin_manifest
 from assayer_platform.actionable_result import build_actionable_result
-from assayer_platform.navigation import MarkdownNavigationAdapter
+from assayer_document_navigation import parse_markdown
 from assayer_platform.review_protocol import validate_review_submission
 from assayer_platform.evidence_graph import (
     build_candidate_evidence_graph, build_candidate_envelope,
@@ -45,7 +45,6 @@ _POLICY_VERSION = str(_POLICY["policy_version"])
 _AUTHORITY_VERSION = str(_POLICY["authority"]["version"])
 _AVAILABLE_PROFILES = tuple(_POLICY["profiles"])
 _STRICT_STRUCTURE_PROFILE = "strict-12-chapter"
-_MARKDOWN_NAVIGATION = MarkdownNavigationAdapter()
 _REQUIRED_CHAPTERS = (
     "模块定义", "状态模型", "功能需求清单", "关键实体", "数据字段定义",
     "非功能性需求选择", "成功标准", "参考资料与合规依据", "关键决策记录",
@@ -398,8 +397,8 @@ def _source_fact_index(
         "authority": re.compile(r"conflict.*(?:favor|precedence)|冲突时.*以|authoritative|权威", re.I),
     }
     heading_units = [
-        unit for unit in _MARKDOWN_NAVIGATION.parse(
-            {"raw": text.encode("utf-8"), "path": "<source-facts>"}
+        unit for unit in parse_markdown(
+            text.encode("utf-8"), path="<source-facts>"
         ).get("units", ())
         if unit.get("kind") == "heading" and unit.get("startLine")
     ]
@@ -687,7 +686,6 @@ class AssSpecPlugin:
 
     def inspect(self, work_items: Sequence[WorkItem], check: CheckContract,
                 context: PlatformContext) -> Sequence[InvestigationPacket]:
-        navigation_context = context
         packets: list[InvestigationPacket] = []
         for item in work_items:
             path = Path(item.metadata["path"])
@@ -715,9 +713,7 @@ class AssSpecPlugin:
             # The generic Markdown navigator supplies a complete, immutable
             # structure map for consumers. Domain rules below remain owned by
             # this plugin; navigation is only a reading aid and evidence map.
-            navigation = _MARKDOWN_NAVIGATION.read_document(
-                {"raw": raw, "path": str(path)}, navigation_context,
-            )
+            navigation = parse_markdown(raw, path=str(path))
             chapters, bodies = _chapters(text), _chapter_bodies(text)
             source_chunks = _source_chunks(
                 text, path, source_digest,

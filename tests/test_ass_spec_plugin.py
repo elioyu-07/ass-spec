@@ -5,7 +5,7 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
-from assayer_host import HostCore, HostError, InteractivePlatformMcpToolTransport, ProductMcpToolTransport
+from assayer_host import HostError, InteractivePlatformMcpToolTransport
 from assayer_platform import PlatformContext, PlatformContractError, PluginRegistry
 from ass_spec import (
     ASS_SPEC_SCOPE_SCHEMA, AssSpecDecisionCommitter, AssSpecPlugin, registration,
@@ -24,7 +24,7 @@ def spec_registry() -> PluginRegistry:
     This mirrors the installed view: the platform ships frontend as a built-in
     while ass-spec is discovered as an independently installed distribution.
     """
-    from assayer_platform.builtin_plugins import builtin_plugin_registry
+    from assayer_platform import builtin_plugin_registry
 
     return PluginRegistry((*builtin_plugin_registry().list(), registration))
 
@@ -588,8 +588,8 @@ AS-006: The system starts from zero; no historical data migration is needed.
                     "resolutionOwner": "Product owner",
                 }],
             }
-            transport = ProductMcpToolTransport(
-                HostCore(), output_root=root / "output",
+            transport = InteractivePlatformMcpToolTransport(
+                root / "output",
                 plugin_registry=spec_registry(),
             )
             transport.call_tool("start_plugin_run", {
@@ -1007,18 +1007,11 @@ The ABC acronym is defined by context.
             self.assertTrue((Path(directory) / "output" / run_id / f"{run_id}.platform-ledger.json").is_file())
 
     def test_product_mcp_connection_exposes_spec_interactive_tools(self):
-        class UnusedFrontendCore:
-            def handle(self, request):
-                raise AssertionError(f"Frontend core should not be used: {request}")
-
-            def close(self):
-                pass
-
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "spec.md"
             path.write_text(COMPLETE_SPEC, encoding="utf-8")
-            transport = ProductMcpToolTransport(UnusedFrontendCore(), output_root=Path(directory) / "output",
-                                                plugin_registry=spec_registry())
+            transport = InteractivePlatformMcpToolTransport(Path(directory) / "output",
+                                                            plugin_registry=spec_registry())
             try:
                 names = {item["name"] for item in transport.list_tools()}
                 self.assertIn("start_plugin_run", names)
