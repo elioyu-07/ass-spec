@@ -2,44 +2,137 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://assayer.dev/ass-spec/review-payload.schema.json",
   "title": "ass-spec checkpoint review payload",
-  "description": "Contract for the opaque payload the ass-spec plugin accepts in checkpoint_review, published to the Agent via the platform tool description.",
+  "description": "Contract for the opaque payload the ass-spec plugin accepts in checkpoint_review, published to the Agent via the platform tool description. The payload shape is chosen by the checkpoint collectionId: for collectionId 'checklist-dimensions' submit checklist_review (itemIdField check_id); for collectionId 'candidate-findings' (itemIdField candidate_id) or 'document-navigation' (itemIdField unitId) submit decisions; for collectionId 'cross-document-relationships' (itemIdField relationship_id) submit cross_document_review.",
   "type": "object",
-  "properties": {
-    "checklist_review": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["check_id", "status", "note", "evidence_refs"],
-        "properties": {
-          "check_id": { "type": "string", "pattern": "^CHK-(0[1-9]|1[0-8])$" },
-          "status": { "enum": ["PASS", "REWORK", "ESCALATE", "UNVERIFIED"] },
-          "note": { "type": "string", "minLength": 1 },
-          "evidence_refs": {
-            "type": "array",
-            "minItems": 1,
-            "description": "References to the frozen source sections (sourceChunks) that back this checklist row. Copy the five fields verbatim from the matching sourceChunks entry; never invent or re-derive them, and never substitute the EvidenceRecord evidenceId (that is a different identifier namespace).",
-            "items": {
-              "type": "object",
-              "required": ["source_chunk_id", "start_line", "end_line", "source_digest", "document_path"],
-              "properties": {
-                "source_chunk_id": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].source_chunk_id." },
-                "start_line": { "type": "integer", "minimum": 1, "description": "Copied verbatim from sourceChunks[].start_line." },
-                "end_line": { "type": "integer", "minimum": 1, "description": "Copied verbatim from sourceChunks[].end_line." },
-                "source_digest": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].source_digest." },
-                "document_path": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].document_path." }
-              }
-            }
-          },
-          "applicability": { "enum": ["APPLICABLE", "NOT_APPLICABLE", "CONDITIONAL", "UNVERIFIED"] },
-          "finding_refs": {
-            "type": "array",
-            "items": { "type": "string", "minLength": 1 }
-          }
+  "oneOf": [
+    {
+      "title": "checklist-dimensions payload",
+      "description": "Use this shape when collectionId is 'checklist-dimensions'. Cover the declared CHK item IDs exactly once and in order.",
+      "type": "object",
+      "required": ["checklist_review"],
+      "properties": {
+        "checklist_review": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "items": { "$ref": "#/$defs/checklist_item" }
         }
       }
     },
-    "decisions": { "type": "array" },
-    "cross_document_review": { "type": "array" }
+    {
+      "title": "candidate-findings / document-navigation payload",
+      "description": "Use this shape when collectionId is 'candidate-findings' or 'document-navigation'. Each decision handles the declared item IDs (candidate_id or unitId) exactly once.",
+      "type": "object",
+      "required": ["decisions"],
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/decision" }
+        }
+      }
+    },
+    {
+      "title": "cross-document-relationships payload",
+      "description": "Use this shape when collectionId is 'cross-document-relationships'. Each entry covers one relationship_id exactly once.",
+      "type": "object",
+      "required": ["cross_document_review"],
+      "properties": {
+        "cross_document_review": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/cross_document_relationship" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "evidence_ref": {
+      "type": "object",
+      "required": ["source_chunk_id", "start_line", "end_line", "source_digest", "document_path"],
+      "description": "A reference to one frozen source section. Copy the five fields verbatim from the matching sourceChunks entry; never invent or re-derive them, and never substitute the EvidenceRecord evidenceId (a different identifier namespace).",
+      "properties": {
+        "source_chunk_id": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].source_chunk_id." },
+        "start_line": { "type": "integer", "minimum": 1, "description": "Copied verbatim from sourceChunks[].start_line." },
+        "end_line": { "type": "integer", "minimum": 1, "description": "Copied verbatim from sourceChunks[].end_line." },
+        "source_digest": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].source_digest." },
+        "document_path": { "type": "string", "minLength": 1, "description": "Copied verbatim from sourceChunks[].document_path." }
+      }
+    },
+    "checklist_item": {
+      "type": "object",
+      "required": ["check_id", "status", "note", "evidence_refs"],
+      "properties": {
+        "check_id": { "type": "string", "pattern": "^CHK-(0[1-9]|1[0-8])$" },
+        "status": { "enum": ["PASS", "REWORK", "ESCALATE", "UNVERIFIED"] },
+        "note": { "type": "string", "minLength": 1 },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence_ref" }
+        },
+        "applicability": { "enum": ["APPLICABLE", "NOT_APPLICABLE", "CONDITIONAL", "UNVERIFIED"] },
+        "finding_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "finding_id values of the confirmed findings that back a REWORK or ESCALATE row."
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["finding_id", "status"],
+      "description": "One semantic review decision. CONFIRMED requires severity, object_id, dimension, gap, impact, recommendation, closure_evidence, and non-empty evidence; the other statuses require review_note (and MERGED requires merged_into pointing at an already-confirmed finding_id).",
+      "properties": {
+        "finding_id": { "type": "string", "minLength": 1, "description": "A finding ID you assign, unique across the whole review and stable across checkpoint pages." },
+        "status": { "enum": ["CONFIRMED", "SUPPRESSED", "MERGED", "UNVERIFIED"] },
+        "candidate_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The candidate_id values from candidateFindings this decision handles. Required for SUPPRESSED/MERGED/UNVERIFIED; CONFIRMED may omit it only for a reviewer-origin finding."
+        },
+        "semantic_type": {
+          "enum": ["ambiguity", "conflict", "contradiction", "drift", "unverified_dependency"],
+          "description": "Only for cross-document findings."
+        },
+        "severity": { "enum": ["P1", "P2", "P3"], "description": "Required when status is CONFIRMED." },
+        "object_id": { "type": "string", "minLength": 1, "description": "Required when status is CONFIRMED; identifies one business object." },
+        "dimension": { "type": "string", "pattern": "^CHK-(0[1-9]|1[0-8])$", "description": "Required when status is CONFIRMED; the CHK-xx dimension this finding maps to." },
+        "gap": { "type": "string", "minLength": 1, "description": "Required when status is CONFIRMED." },
+        "impact": { "type": "string", "minLength": 1, "description": "Required when status is CONFIRMED." },
+        "recommendation": { "type": "string", "minLength": 1, "description": "Required when status is CONFIRMED." },
+        "closure_evidence": { "type": "string", "minLength": 1, "description": "Required when status is CONFIRMED." },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Required when status is CONFIRMED; verbatim lines from the target Spec that trace to the candidate."
+        },
+        "review_note": { "type": "string", "minLength": 1, "description": "Required when status is SUPPRESSED, MERGED, or UNVERIFIED." },
+        "merged_into": { "type": "string", "minLength": 1, "description": "Only when status is MERGED; the finding_id of an already-confirmed finding." },
+        "observed_fact": { "type": "string" },
+        "affected_elements": { "type": "array", "items": { "type": "string" } },
+        "owner": { "type": "string" },
+        "next_action": { "type": "string" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_ref" }
+        }
+      }
+    },
+    "cross_document_relationship": {
+      "type": "object",
+      "required": ["relationship_id", "outcome", "note"],
+      "description": "One cross-document relationship review. outcome FINDING or UNVERIFIED requires a non-empty decisions array.",
+      "properties": {
+        "relationship_id": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["COMPATIBLE", "FINDING", "UNVERIFIED"] },
+        "note": { "type": "string", "minLength": 1 },
+        "decisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/decision" }
+        }
+      }
+    }
   }
 }

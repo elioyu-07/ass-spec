@@ -3,7 +3,7 @@
   "pluginId": "ass-spec",
   "name": "ass-spec",
   "description": "Reviews Markdown product and software specifications against the canonical 18-point quality policy.",
-  "pluginVersion": "1.1.2",
+  "pluginVersion": "1.1.3",
   "platformApiVersion": "1.0.0",
   "registration": "ass_spec:registration",
   "manifest": "src/ass_spec/manifest.json",
