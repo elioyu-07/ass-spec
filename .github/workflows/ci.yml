@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install platform and plugin
+        run: |
+          pip install "assayer>=0.1.0,<0.2.0"
+          pip install -e .
+      - name: Surface conformance
+        run: assayer-plugin-surface-check src
+      - name: Registration conformance
+        run: assayer-plugin-check ass_spec:registration
+      - name: Package conformance
+        run: assayer-plugin-package-check .
+      - name: Plugin tests
+        run: python -m unittest discover -s tests -p 'test_*.py'

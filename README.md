@@ -1,0 +1,48 @@
+# ass-spec
+
+The reference Assayer plugin that reviews Markdown product and software
+specifications against the canonical 18-point quality policy.
+
+This is a standalone plugin project. It depends on the Assayer platform
+distribution (`assayer`) and does not live inside the Assayer source tree.
+
+## Development
+
+```bash
+pip install assayer          # the platform SDK (public surface + conformance CLIs)
+pip install -e .             # this plugin, editable
+
+# validate the plugin against the platform contracts
+assayer-plugin-surface-check src
+assayer-plugin-check ass_spec:registration
+assayer-plugin-package-check .
+
+# run the plugin's own tests
+python -m unittest discover -s tests -p 'test_*.py'
+```
+
+## Layout
+
+```
+src/ass_spec/            # plugin source (imports only the public SDK surface)
+tests/                   # plugin behavior + layer-migration equivalence proofs
+fixtures/                # deterministic conformance fixtures
+assayer-plugin-release.json   # release descriptor
+semantic-review.md       # Agent decision boundary
+```
+
+## Public SDK surface
+
+`ass-spec` imports only names from the Assayer public surface defined in
+`assayer_platform.public_surface`. `assayer-plugin-surface-check` fails the
+build if the plugin reaches beyond that whitelist, which is what keeps the
+platform boundary enforceable for any third-party plugin.
+
+## Versioning
+
+`ass-spec` releases independently of Assayer. Its `pyproject.toml` declares the
+supported platform range:
+
+```toml
+dependencies = ["assayer>=0.1.0,<0.2.0"]
+```
