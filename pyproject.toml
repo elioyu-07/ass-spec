@@ -7,7 +7,7 @@ name = "ass-spec"
 version = "1.0.0"
 description = "ass-spec: the Assayer plugin that reviews Markdown product and software specifications against the canonical 18-point quality policy."
 requires-python = ">=3.11"
-dependencies = ["assayer>=0.1.0,<0.2.0"]
+dependencies = ["assayer>=0.1.0,<0.2.0", "jsonschema==4.26.0"]
 
 [project.entry-points."assayer.plugins"]
 ass-spec = "ass_spec:registration"

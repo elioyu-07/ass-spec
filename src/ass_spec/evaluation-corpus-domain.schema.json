@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assayer.dev/plugins/ass-spec/evaluation-corpus-domain.schema.json",
+  "title": "ass-spec Evaluation Corpus Domain Extensions",
+  "description": "Domain-specific keys that ass-spec owns on top of the platform's generic evaluation-corpus envelope. Validates the 'expected' object's readiness and contextAssertions members.",
+  "type": "object",
+  "required": ["readiness"],
+  "properties": {
+    "readiness": { "enum": ["READY", "REWORK", "ESCALATE", "UNVERIFIED"] },
+    "contextAssertions": { "$ref": "#/$defs/contextAssertions" }
+  },
+  "$defs": {
+    "contextAssertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentType", "requiredIdentifiers", "requiredStatementKinds", "checklistResults"],
+      "properties": {
+        "documentType": {
+          "enum": ["feature_spec", "shared_contract", "data_model", "interface_contract", "rfc_prd", "other"]
+        },
+        "requiredIdentifiers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/entityId" }
+        },
+        "requiredStatementKinds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["no_migration", "not_applicable", "delegation", "authority"] }
+        },
+        "checklistResults": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["checkId", "applicability", "status"],
+            "properties": {
+              "checkId": { "pattern": "^CHK-(0[1-9]|1[0-8])$" },
+              "applicability": { "enum": ["APPLICABLE", "NOT_APPLICABLE", "CONDITIONAL", "UNVERIFIED"] },
+              "status": { "enum": ["PASS", "REWORK", "ESCALATE", "UNVERIFIED"] }
+            }
+          }
+        }
+      }
+    },
+    "entityId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{2,127}$"
+    }
+  }
+}

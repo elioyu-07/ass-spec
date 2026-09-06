@@ -8,16 +8,18 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from assayer_platform import PlatformContext
 from assayer_platform.evaluation import (
-    load_evaluation_corpus as _load_evaluation_corpus,
-    validate_evaluation_corpus,
+    validate_evaluation_corpus as _validate_platform_corpus,
 )
 from .runtime import AssSpecPlugin
 
 
 _ROOT = Path(__file__).parent
 _CORPUS_PATH = _ROOT / "evaluation" / "corpus.json"
+_DOMAIN_SCHEMA_PATH = _ROOT / "evaluation-corpus-domain.schema.json"
 _REVIEW_STATUSES = {"CONFIRMED", "SUPPRESSED", "MERGED", "UNVERIFIED"}
 _READINESS_STATUSES = {"READY", "REWORK", "ESCALATE", "UNVERIFIED"}
 
@@ -82,9 +84,23 @@ def _semantic_signature_document(
     }
 
 
+def _domain_validator() -> Draft202012Validator:
+    schema = json.loads(_DOMAIN_SCHEMA_PATH.read_text(encoding="utf-8"))
+    return Draft202012Validator(schema)
+
+
+def validate_evaluation_corpus(corpus: Mapping[str, Any]) -> None:
+    """Validate the generic platform envelope plus ass-spec's domain extensions."""
+    _validate_platform_corpus(corpus)
+    domain = _domain_validator()
+    for case in corpus["cases"]:
+        domain.validate(dict(case["expected"]))
+
+
 def load_evaluation_corpus(path: Path | None = None) -> dict[str, Any]:
     corpus_path = (path or _CORPUS_PATH).resolve()
-    corpus = _load_evaluation_corpus(corpus_path)
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    validate_evaluation_corpus(corpus)
     fixture_root = corpus_path.parent
     for case in corpus["cases"]:
         for document in case["documents"]:
