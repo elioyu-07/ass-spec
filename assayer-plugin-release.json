@@ -1,7 +1,9 @@
 {
   "schemaVersion": "1.0.0",
   "pluginId": "ass-spec",
-  "pluginVersion": "1.0.0",
+  "name": "ass-spec",
+  "description": "Reviews Markdown product and software specifications against the canonical 18-point quality policy.",
+  "pluginVersion": "1.1.0",
   "platformApiVersion": "1.0.0",
   "registration": "ass_spec:registration",
   "manifest": "src/ass_spec/manifest.json",

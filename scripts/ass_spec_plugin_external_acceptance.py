@@ -79,6 +79,16 @@ Version 1.0 was created for the initial review.
 """
 
 
+def _current_version(package: Path) -> str:
+    descriptor = json.loads((package / "assayer-plugin-release.json").read_text(encoding="utf-8"))
+    return descriptor["pluginVersion"]
+
+
+def _next_version(version: str) -> str:
+    major, minor, _patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor + 1}.0"
+
+
 def _bumped_copy(package: Path, destination: Path, version: str) -> Path:
     shutil.copytree(package, destination)
     descriptor = json.loads((destination / "assayer-plugin-release.json").read_text(encoding="utf-8"))
@@ -90,7 +100,7 @@ def _bumped_copy(package: Path, destination: Path, version: str) -> Path:
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     metadata = destination / "pyproject.toml"
     metadata.write_text(metadata.read_text(encoding="utf-8").replace(
-        'version = "1.0.0"', f'version = "{version}"',
+        f'version = "{_current_version(package)}"', f'version = "{version}"',
     ))
     return destination
 
@@ -135,6 +145,8 @@ def run() -> dict:
 
         store = PluginInstallationStore(store_root)
         manager = PluginLifecycleManager(store)
+        current_version = _current_version(PACKAGE)
+        upgrade_version = _next_version(current_version)
 
         installed = manager.install(PACKAGE)
         if installed["status"] != "completed" or installed["pluginId"] != PLUGIN_ID:
@@ -158,13 +170,15 @@ def run() -> dict:
             raise RuntimeError(f"run published HTML output: {html_artifacts}")
 
         with tempfile.TemporaryDirectory() as bumped:
-            upgraded_source = _bumped_copy(PACKAGE, Path(bumped) / "v110", "1.1.0")
+            upgraded_source = _bumped_copy(
+                PACKAGE, Path(bumped) / f"v{upgrade_version.replace('.', '')}", upgrade_version,
+            )
             upgraded = manager.upgrade(upgraded_source)
-        if upgraded["version"] != "1.1.0":
+        if upgraded["version"] != upgrade_version:
             raise RuntimeError(f"upgrade did not land: {upgraded}")
 
         rolled_back = manager.rollback(PLUGIN_ID)
-        if rolled_back["version"] != "1.0.0":
+        if rolled_back["version"] != current_version:
             raise RuntimeError(f"rollback did not restore: {rolled_back}")
 
         uninstalled = manager.uninstall(PLUGIN_ID)
