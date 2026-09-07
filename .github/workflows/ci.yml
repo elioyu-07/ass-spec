@@ -15,6 +15,7 @@ jobs:
           python-version: "3.12"
       - name: Install platform and plugin
         run: |
+          pip install setuptools wheel
           pip install "https://github.com/elioyu-07/Assayer/releases/download/v0.1.1/assayer-0.1.1-py3-none-any.whl"
           pip install -e .
       - name: Surface conformance
