@@ -57,12 +57,12 @@ independent distribution.
 plugins/spec-quality/
   pyproject.toml                    # assayer-spec-quality, assayer.plugins entry point
   assayer-plugin-release.json       # release descriptor
-  semantic-review.md                # Agent decision boundary (structured review)
   fixtures/
     spec-smoke.json                 # deterministic fixture
     spec-smoke.md                   # business input for the fixture
   src/assayer_spec_quality/
     __init__.py                     # registration + re-exports
+    semantic-review.md              # packaged Agent decision boundary
     runtime.py                      # SpecQualityPlugin (absolute platform imports)
     review.py                       # SpecQualityDecisionCommitter + review helpers
     evaluation.py                   # semantic-review corpus evaluation

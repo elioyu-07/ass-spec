@@ -105,32 +105,117 @@ def _bumped_copy(package: Path, destination: Path, version: str) -> Path:
     return destination
 
 
-def _run_spec(registry, output_root: Path, spec_path: Path) -> dict:
+def _run_spec(registry, output_root: Path, spec_path: Path, *, scope=None) -> dict:
     """Drive one interactive Spec run with Agent semantic review and return
     the terminal result plus the run identity."""
     transport = InteractivePlatformMcpToolTransport(output_root, plugin_registry=registry)
     try:
         started = transport.call_tool("start_plugin_run", {
             "pluginId": PLUGIN_ID, "checkId": "SPEC-001",
-            "scope": {"files": [{"path": str(spec_path)}]},
+            "scope": scope or {"files": [{"path": str(spec_path)}]},
         })["structuredContent"]["result"]
         run_id = started["runId"]
-        transport.call_tool("discover_work_items", {})
-        inspected = transport.call_tool("inspect_work_items", {"includeEvidence": True})
-        packet = inspected["structuredContent"]["result"]["result"]["investigations"][0]
-        decisions = [{
-            "workItemId": packet["workItem"]["workItemId"],
+        boundary = transport.call_tool("advance_plugin_run", {})[
+            "structuredContent"
+        ]["result"]
+        checklist = []
+        checkpoint_pages = 0
+        reviewed_collections = set()
+        evidence_ref = None
+        frozen_digest = started["result"]["agentContract"]["contractDigest"]
+        while boundary["result"]["semanticTask"]["kind"] == "review_evidence_items":
+            task = boundary["result"]["semanticTask"]
+            contract = task["agentContract"]
+            if contract["contractDigest"] != frozen_digest:
+                raise RuntimeError("semantic boundary changed its frozen contract digest")
+            collection_id = task["collectionId"]
+            reviewed_collections.add(collection_id)
+            if collection_id in {"candidate-findings", "document-navigation"}:
+                payload = {"decisions": [{
+                    "finding_id": f"reviewed-{item_id}",
+                    "status": "SUPPRESSED",
+                    "candidate_ids": [item_id],
+                    "review_note": "The reviewed pointer is not a material Spec finding.",
+                } for item_id in task["itemIds"]]}
+            elif collection_id == "cross-document-relationships":
+                payload = {"cross_document_review": [{
+                    "relationship_id": item_id,
+                    "outcome": "COMPATIBLE",
+                    "note": "The frozen relationship evidence is compatible.",
+                    "decisions": [],
+                } for item_id in task["itemIds"]]}
+            elif collection_id == "checklist-dimensions":
+                if evidence_ref is None:
+                    page = transport.call_tool("expand_evidence_collection", {
+                        "workItemId": task["workItemId"],
+                        "collectionId": "source-sections",
+                        "pageSize": 1,
+                    })["structuredContent"]["result"]["result"]
+                    source = page["items"][0]
+                    evidence_ref = {
+                        key: source[key] for key in (
+                            "source_chunk_id", "document_path", "source_digest",
+                            "start_line", "end_line",
+                        )
+                    }
+                batch = [{
+                    "check_id": check_id,
+                    "status": "PASS",
+                    "note": "Reviewed and satisfied.",
+                    "evidence_refs": [evidence_ref],
+                    "applicability": "APPLICABLE",
+                    "observation": "The dimension was checked against frozen source evidence.",
+                    "gap": "No material gap was observed for this dimension.",
+                    "impact": "No adverse impact is established by the reviewed evidence.",
+                    "recommendation": "Keep the current evidence-backed definition.",
+                    "owner": "Spec owner",
+                    "next_action": "Retain the evidence reference on the next revision.",
+                    "confidence": "high",
+                } for check_id in task["itemIds"]]
+                checklist.extend(batch)
+                payload = {"checklist_review": batch}
+            else:
+                raise RuntimeError(f"unexpected review collection: {collection_id}")
+            Draft202012Validator(contract["schema"]).validate(payload)
+            boundary = transport.call_tool("advance_plugin_run", {
+                "reviewCheckpoint": {
+                    "workItemId": task["workItemId"],
+                    "collectionId": collection_id,
+                    "itemIds": task["itemIds"],
+                    "payload": payload,
+                    "contractDigest": frozen_digest,
+                },
+            })["structuredContent"]["result"]
+            checkpoint_pages += 1
+
+        task = boundary["result"]["semanticTask"]
+        if task["kind"] != "finalize_decision":
+            raise RuntimeError(f"unexpected terminal semantic task: {task}")
+        finalization = {"readiness_context": {
+            "mandatory_dimensions_checked": True,
+            "unresolved_blockers": False,
+            "escalations": [],
+        }}
+        Draft202012Validator(task["agentContract"]["schema"]).validate(finalization)
+        finished = transport.call_tool("advance_plugin_run", {"decision": {
+            "workItemId": task["workItemId"],
             "result": "scanned_no_issue",
-            "reason": "The reviewed Spec satisfies every required dimension.",
+            "reason": "Every required evidence page and checklist dimension was reviewed.",
             "findings": [{
-                "dimension": dimension["name"], "status": "satisfied",
-                "reason": dimension["observations"][0],
-            } for dimension in packet["dimensions"]],
-        }]
-        transport.call_tool("submit_decisions", {"decisions": decisions})
-        finished = transport.call_tool("finish_plugin_run", {"status": "completed"})
-        result = finished["structuredContent"]["result"]
-        return {"runId": run_id, "result": result}
+                "dimension": item["check_id"],
+                "status": "satisfied",
+                "reason": item["note"],
+            } for item in checklist],
+            "finalization": finalization,
+            "contractDigest": frozen_digest,
+        }})["structuredContent"]["result"]
+        return {
+            "runId": run_id,
+            "result": finished,
+            "checkpointPages": checkpoint_pages,
+            "reviewedCollections": sorted(reviewed_collections),
+            "contractDigest": frozen_digest,
+        }
     finally:
         transport.close()
 
@@ -157,17 +242,52 @@ def run() -> dict:
         if discovered != [PLUGIN_ID]:
             raise RuntimeError(f"discovery did not surface the plugin: {discovered}")
 
-        run = _run_spec(registry, output_root, spec_path)
+        run = _run_spec(registry, output_root / "candidate", spec_path)
         result = run["result"]
         if result["status"] != "completed":
             raise RuntimeError(f"run did not complete: {result}")
         summary = result["result"]["summary"]
-        ledger_path = output_root / run["runId"] / f"{run['runId']}.platform-ledger.json"
+        ledger_path = output_root / "candidate" / run["runId"] / f"{run['runId']}.platform-ledger.json"
         if not ledger_path.is_file():
             raise RuntimeError("run did not publish a platform ledger")
-        html_artifacts = list((output_root / run["runId"]).rglob("*.html"))
+        html_artifacts = list((output_root / "candidate" / run["runId"]).rglob("*.html"))
         if html_artifacts:
             raise RuntimeError(f"run published HTML output: {html_artifacts}")
+
+        navigation_run = _run_spec(
+            registry, output_root / "navigation", spec_path,
+            scope={"files": [{
+                "path": str(spec_path), "reviewStrategy": "navigation",
+            }]},
+        )
+        related_path = root / "related.md"
+        related_path.write_text(
+            "# Related Contract\n\nFR-001 creates one account result.\n",
+            encoding="utf-8",
+        )
+        cross_document_run = _run_spec(
+            registry, output_root / "cross-document", spec_path,
+            scope={
+                "anchor": {"documentId": "anchor", "path": str(spec_path)},
+                "relatedDocuments": [{
+                    "documentId": "related", "path": str(related_path),
+                }],
+                "relationships": [{
+                    "relationshipId": "anchor-related",
+                    "fromDocumentId": "anchor",
+                    "toDocumentId": "related",
+                    "kind": "implements",
+                    "evidence": "The related contract implements FR-001.",
+                    "resolutionOwner": "Product owner",
+                }],
+            },
+        )
+        strict_runs = (run, navigation_run, cross_document_run)
+        reviewed_collections = sorted({
+            collection_id
+            for strict_run in strict_runs
+            for collection_id in strict_run["reviewedCollections"]
+        })
 
         with tempfile.TemporaryDirectory() as bumped:
             upgraded_source = _bumped_copy(
@@ -214,6 +334,11 @@ def run() -> dict:
                 "structuredSummary": True,
                 "htmlOutput": False,
                 "ledgerPublished": True,
+                "strictContract": bool(run["contractDigest"]),
+                "checkpointPages": sum(item["checkpointPages"] for item in strict_runs),
+                "completedStrictRuns": len(strict_runs),
+                "reviewedCollections": reviewed_collections,
+                "agentRetries": 0,
                 "installedCount": len(manager.list()),
             },
         }

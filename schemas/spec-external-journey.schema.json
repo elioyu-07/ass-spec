@@ -36,11 +36,27 @@
     "assertions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["structuredSummary", "htmlOutput", "ledgerPublished", "installedCount"],
+      "required": [
+        "structuredSummary", "htmlOutput", "ledgerPublished", "strictContract",
+        "checkpointPages", "completedStrictRuns", "reviewedCollections",
+        "agentRetries", "installedCount"
+      ],
       "properties": {
         "structuredSummary": { "const": true },
         "htmlOutput": { "const": false },
         "ledgerPublished": { "const": true },
+        "strictContract": { "const": true },
+        "checkpointPages": { "type": "integer", "minimum": 5 },
+        "completedStrictRuns": { "const": 3 },
+        "reviewedCollections": {
+          "const": [
+            "candidate-findings",
+            "checklist-dimensions",
+            "cross-document-relationships",
+            "document-navigation"
+          ]
+        },
+        "agentRetries": { "const": 0 },
         "installedCount": { "const": 0 }
       }
     },

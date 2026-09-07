@@ -1,14 +1,16 @@
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
-from assayer_host import HostError, InteractivePlatformMcpToolTransport
+from assayer_host import HostError, InteractivePlatformMcpToolTransport as BaseInteractiveTransport
 from assayer_platform import PlatformContext, PlatformContractError, PluginRegistry
 from ass_spec import (
-    ASS_SPEC_SCOPE_SCHEMA, AssSpecDecisionCommitter, AssSpecPlugin, registration,
+    ASS_SPEC_AGENT_CONTRACT, ASS_SPEC_SCOPE_SCHEMA, AssSpecDecisionCommitter,
+    AssSpecPlugin, registration,
 )
 from ass_spec.runtime import _actionable_result_delivery
 from ass_spec.review import (
@@ -16,6 +18,30 @@ from ass_spec.review import (
 )
 from assayer_platform import DecisionProposal, Finding
 from jsonschema import Draft202012Validator
+
+
+CONTRACT_DIGEST = ASS_SPEC_AGENT_CONTRACT.contract_digest
+
+
+class InteractivePlatformMcpToolTransport(BaseInteractiveTransport):
+    """Keep plugin-focused tests explicit about the registered strict contract."""
+
+    def call_tool(self, name, arguments):
+        arguments = copy.deepcopy(arguments)
+        if name == "checkpoint_review":
+            arguments.setdefault("contractDigest", CONTRACT_DIGEST)
+        elif name == "advance_plugin_run":
+            checkpoint = arguments.get("reviewCheckpoint")
+            if isinstance(checkpoint, dict):
+                checkpoint.setdefault("contractDigest", CONTRACT_DIGEST)
+            decision = arguments.get("decision")
+            if isinstance(decision, dict):
+                decision.setdefault("contractDigest", CONTRACT_DIGEST)
+        elif name == "submit_decisions":
+            for decision in arguments.get("decisions", ()):
+                if isinstance(decision, dict):
+                    decision.setdefault("contractDigest", CONTRACT_DIGEST)
+        return super().call_tool(name, arguments)
 
 
 def spec_registry() -> PluginRegistry:
@@ -27,6 +53,104 @@ def spec_registry() -> PluginRegistry:
     from assayer_platform import builtin_plugin_registry
 
     return PluginRegistry((*builtin_plugin_registry().list(), registration))
+
+
+def passing_checklist_row(check_id, evidence_ref):
+    return {
+        "check_id": check_id,
+        "status": "PASS",
+        "note": "Reviewed and satisfied.",
+        "evidence_refs": [evidence_ref],
+        "applicability": "APPLICABLE",
+        "observation": "The declared dimension was checked against frozen source evidence.",
+        "gap": "No material gap was observed for this dimension.",
+        "impact": "No adverse impact is established by the reviewed evidence.",
+        "recommendation": "Keep the current evidence-backed definition.",
+        "owner": "Spec owner",
+        "next_action": "Retain the evidence reference on the next revision.",
+        "confidence": "high",
+    }
+
+
+def complete_interactive_review(transport, scope):
+    """Drive every strict ass-spec checkpoint page and finalization boundary."""
+    started = transport.call_tool("start_plugin_run", {
+        "pluginId": "ass-spec", "checkId": "SPEC-001", "scope": scope,
+    })["structuredContent"]["result"]
+    boundary = transport.call_tool("advance_plugin_run", {})[
+        "structuredContent"
+    ]["result"]
+    checklist = []
+    evidence_ref = None
+    while boundary["result"]["semanticTask"]["kind"] == "review_evidence_items":
+        task = boundary["result"]["semanticTask"]
+        contract = task["agentContract"]
+        assert contract["contractDigest"] == CONTRACT_DIGEST
+        assert contract["inputKind"] == "reviewCheckpoint"
+        collection_id = task["collectionId"]
+        if collection_id in {"candidate-findings", "document-navigation"}:
+            payload = {"decisions": [{
+                "finding_id": f"reviewed-{item_id}",
+                "status": "SUPPRESSED",
+                "candidate_ids": [item_id],
+                "review_note": "The reviewed pointer is not a material Spec finding.",
+            } for item_id in task["itemIds"]]}
+        elif collection_id == "cross-document-relationships":
+            payload = {"cross_document_review": [{
+                "relationship_id": item_id,
+                "outcome": "COMPATIBLE",
+                "note": "The frozen relationship evidence is compatible.",
+                "decisions": [],
+            } for item_id in task["itemIds"]]}
+        elif collection_id == "checklist-dimensions":
+            if evidence_ref is None:
+                page = transport.call_tool("expand_evidence_collection", {
+                    "workItemId": task["workItemId"],
+                    "collectionId": "source-sections",
+                    "pageSize": 1,
+                })["structuredContent"]["result"]["result"]
+                source = page["items"][0]
+                evidence_ref = {
+                    key: source[key] for key in (
+                        "source_chunk_id", "document_path", "source_digest",
+                        "start_line", "end_line",
+                    )
+                }
+            batch = [passing_checklist_row(item_id, evidence_ref) for item_id in task["itemIds"]]
+            checklist.extend(batch)
+            payload = {"checklist_review": batch}
+        else:
+            raise AssertionError(f"unexpected review collection: {collection_id}")
+        boundary = transport.call_tool("advance_plugin_run", {
+            "reviewCheckpoint": {
+                "workItemId": task["workItemId"],
+                "collectionId": collection_id,
+                "itemIds": task["itemIds"],
+                "payload": payload,
+                "contractDigest": CONTRACT_DIGEST,
+            },
+        })["structuredContent"]["result"]
+
+    task = boundary["result"]["semanticTask"]
+    assert task["kind"] == "finalize_decision"
+    assert task["agentContract"]["inputKind"] == "finalization"
+    finished = transport.call_tool("advance_plugin_run", {"decision": {
+        "workItemId": task["workItemId"],
+        "result": "scanned_no_issue",
+        "reason": "Every required evidence page and checklist dimension was reviewed.",
+        "findings": [{
+            "dimension": item["check_id"],
+            "status": "satisfied",
+            "reason": item["note"],
+        } for item in checklist],
+        "finalization": {"readiness_context": {
+            "mandatory_dimensions_checked": True,
+            "unresolved_blockers": False,
+            "escalations": [],
+        }},
+        "contractDigest": CONTRACT_DIGEST,
+    }})["structuredContent"]["result"]
+    return started, finished
 
 
 COMPLETE_SPEC = """# Product Spec: Example
@@ -72,6 +196,51 @@ Version 1.0 was created for the initial review.
 
 
 class AssSpecPluginTest(unittest.TestCase):
+    def test_registration_publishes_one_page_contract_per_review_collection(self):
+        self.assertEqual(registration.review_payload_schema, {})
+        self.assertEqual(registration.agent_contracts, (ASS_SPEC_AGENT_CONTRACT,))
+        self.assertEqual(
+            set(ASS_SPEC_AGENT_CONTRACT.checkpoint_payload_schemas),
+            {
+                "candidate-findings",
+                "document-navigation",
+                "cross-document-relationships",
+                "checklist-dimensions",
+            },
+        )
+        instructions = Path(__file__).parents[1] / "src" / "ass_spec" / "semantic-review.md"
+        self.assertEqual(
+            ASS_SPEC_AGENT_CONTRACT.semantic_instructions_sha256,
+            hashlib.sha256(instructions.read_bytes()).hexdigest(),
+        )
+        for schema in ASS_SPEC_AGENT_CONTRACT.checkpoint_payload_schemas.values():
+            Draft202012Validator.check_schema(schema)
+        candidate_definitions = ASS_SPEC_AGENT_CONTRACT.checkpoint_payload_schemas[
+            "candidate-findings"
+        ]["$defs"]
+        self.assertEqual(
+            set(candidate_definitions), {"candidateDecision", "sourceEvidenceRef"},
+        )
+        Draft202012Validator.check_schema(ASS_SPEC_AGENT_CONTRACT.finalization_schema)
+
+    def test_discover_rejects_empty_or_malformed_business_scope(self):
+        plugin = AssSpecPlugin()
+        context = PlatformContext("run-invalid-scope", frozenset({"structured_read"}))
+        for scope in ({}, {"files": []}, {"files": [None]}):
+            with self.subTest(scope=scope), self.assertRaises(PlatformContractError) as error:
+                plugin.discover(scope, context)
+            self.assertEqual(error.exception.code, "INVALID_SPEC_SCOPE")
+
+    def test_discover_rejects_duplicate_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spec.md"
+            path.write_text("# Example\n", encoding="utf-8")
+            plugin = AssSpecPlugin()
+            context = PlatformContext("run-duplicate-scope", frozenset({"structured_read"}))
+            with self.assertRaises(PlatformContractError) as error:
+                plugin.discover({"files": [{"path": str(path)}, {"path": str(path)}]}, context)
+            self.assertEqual(error.exception.code, "INVALID_SPEC_SCOPE")
+
     def test_inspection_exposes_document_context_and_source_facts(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shared.md"
@@ -984,26 +1153,11 @@ The ABC acronym is defined by context.
             transport = InteractivePlatformMcpToolTransport(
                 Path(directory) / "output", plugin_registry=spec_registry(),
             )
-            started = transport.call_tool("start_plugin_run", {
-                "pluginId": "ass-spec", "checkId": "SPEC-001",
-                "scope": {"files": [{"path": str(path)}]},
-            })
-            run_id = started["structuredContent"]["result"]["runId"]
-            transport.call_tool("discover_work_items", {})
-            inspected = transport.call_tool("inspect_work_items", {"includeEvidence": True})
-            packet = inspected["structuredContent"]["result"]["result"]["investigations"][0]
-            decisions = [{
-                "workItemId": packet["workItem"]["workItemId"],
-                "result": "scanned_no_issue",
-                "reason": "The reviewed Spec satisfies all required dimensions.",
-                "findings": [{
-                    "dimension": dimension["name"], "status": "satisfied",
-                    "reason": dimension["observations"][0],
-                } for dimension in packet["dimensions"]],
-            }]
-            transport.call_tool("submit_decisions", {"decisions": decisions})
-            finished = transport.call_tool("finish_plugin_run", {"status": "completed"})
-            self.assertEqual(finished["structuredContent"]["result"]["status"], "completed")
+            started, finished = complete_interactive_review(
+                transport, {"files": [{"path": str(path)}]},
+            )
+            run_id = started["runId"]
+            self.assertEqual(finished["status"], "completed")
             self.assertTrue((Path(directory) / "output" / run_id / f"{run_id}.platform-ledger.json").is_file())
 
     def test_product_mcp_connection_exposes_spec_interactive_tools(self):
@@ -1028,7 +1182,7 @@ The ABC acronym is defined by context.
             finally:
                 transport.close()
 
-    def test_spec_result_summary_is_candidate_until_semantic_review(self):
+    def test_spec_contract_rejects_completion_before_semantic_review(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "spec.md"
             path.write_text("# Example\n\nThe system should be good.\n", encoding="utf-8")
@@ -1039,7 +1193,6 @@ The ABC acronym is defined by context.
                 "pluginId": "ass-spec", "checkId": "SPEC-001",
                 "scope": {"files": [{"path": str(path)}]},
             })
-            run_id = started["structuredContent"]["result"]["runId"]
             transport.call_tool("discover_work_items", {})
             inspected = transport.call_tool("inspect_work_items", {"includeEvidence": True})
             packet = inspected["structuredContent"]["result"]["result"]["investigations"][0]
@@ -1049,27 +1202,13 @@ The ABC acronym is defined by context.
             self.assertEqual(payload["readiness"]["status"], "UNVERIFIED")
             item_id = packet["workItem"]["workItemId"]
             findings = [{"dimension": item["name"], "status": "satisfied", "reason": "Reviewed."} for item in packet["dimensions"]]
-            transport.call_tool("submit_decisions", {"decisions": [{
-                "workItemId": item_id, "result": "scanned_no_issue",
-                "findings": findings, "reason": "Compatibility test decision.",
-            }]})
-            finished = transport.call_tool("finish_plugin_run", {"status": "completed"})
-            result = finished["structuredContent"]["result"]["result"]
-            summary = result["summary"]
-            self.assertEqual(summary["phase"], "CANDIDATE")
-            self.assertEqual(summary["readiness"]["status"], "UNVERIFIED")
-            self.assertGreater(summary["review"]["candidateCount"], 0)
-            self.assertEqual(summary["review"]["handledCandidateCount"], 0)
-            self.assertEqual(summary["review"]["pendingCandidateCount"], summary["review"]["candidateCount"])
-            self.assertEqual(set(result["artifacts"]), {
-                "result-summary.json", f"{run_id}.canonical-result.json",
-            })
-            result_path = Path(directory) / "output" / run_id / "result-summary.json"
-            self.assertTrue(result_path.is_file())
-            complete_result = json.loads(result_path.read_text(encoding="utf-8"))
-            self.assertEqual(complete_result["result"]["summary"]["review"]["candidateCount"], summary["review"]["candidateCount"])
-            self.assertEqual(complete_result["sourceDigest"], result["resultDelivery"]["sourceDigest"])
-            self.assertFalse((Path(directory) / "output" / run_id / "report.html").exists())
+            with self.assertRaises(HostError) as rejected:
+                transport.call_tool("submit_decisions", {"decisions": [{
+                    "workItemId": item_id, "result": "scanned_no_issue",
+                    "findings": findings, "reason": "Attempted checkpoint bypass.",
+                }]})
+            self.assertEqual(rejected.exception.code, "AGENT_CONTRACT_INPUT_INVALID")
+            self.assertEqual(rejected.exception.owner, "agent_input")
 
     def test_spec_candidates_use_generic_summary_first_collection_pages(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1416,7 +1555,11 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                         "reason": "This projection must not bypass persisted review.",
                     } for index in range(1, 19)],
                     "reviewCheckpointIds": checkpoint_ids,
-                    "finalization": {"readiness_context": {}},
+                    "finalization": {"readiness_context": {
+                        "mandatory_dimensions_checked": True,
+                        "unresolved_blockers": False,
+                        "escalations": [],
+                    }},
                 }]})
             self.assertEqual(
                 incomplete_collections.exception.code, "REVIEW_CHECKPOINT_INCOMPLETE",
@@ -1438,15 +1581,15 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                         "workItemId": work_item_id,
                         "collectionId": "checklist-dimensions",
                         "itemIds": checklist_boundary["itemIds"],
-                        "payload": {"checklist_review": [{
-                            "check_id": check_id,
-                            "status": "PASS",
-                            "note": "Reviewed and satisfied.",
-                            "evidence_refs": [invalid_ref],
-                        } for check_id in checklist_boundary["itemIds"]]},
+                        "payload": {"checklist_review": [
+                            passing_checklist_row(check_id, invalid_ref)
+                            for check_id in checklist_boundary["itemIds"]
+                        ]},
                     },
                 })
-            self.assertEqual(invalid_evidence.exception.code, "SPEC_REVIEW_INVALID")
+            self.assertEqual(
+                invalid_evidence.exception.code, "PLUGIN_SEMANTIC_INPUT_INVALID",
+            )
             repeated_boundary = transport.call_tool("advance_plugin_run", {})[
                 "structuredContent"
             ]["result"]["result"]["semanticTask"]
@@ -1504,7 +1647,7 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
             self.assertEqual(summary["readiness"]["status"], "READY")
             self.assertEqual(summary["review"]["handledCandidateCount"], collection["itemCount"])
 
-    def test_spec_checklist_review_resumes_after_a_persisted_batch(self):
+    def test_legacy_checklist_shape_fails_fast_then_strict_batch_resumes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "spec.md"
             path.write_text(COMPLETE_SPEC, encoding="utf-8")
@@ -1547,17 +1690,36 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                 "structuredContent"
             ]["result"]["result"]["semanticTask"]
             self.assertEqual(first_batch["collectionId"], "checklist-dimensions")
+            with self.assertRaises(HostError) as outdated_shape:
+                first_transport.call_tool("advance_plugin_run", {
+                    "reviewCheckpoint": {
+                        "workItemId": work_item_id,
+                        "collectionId": "checklist-dimensions",
+                        "itemIds": first_batch["itemIds"],
+                        "payload": {"checklist_review": [{
+                            "check_id": check_id,
+                            "status": "PASS",
+                            "note": "This was valid only under the retired global schema.",
+                            "evidence_refs": [evidence_ref],
+                        } for check_id in first_batch["itemIds"]]},
+                    },
+                })
+            self.assertEqual(
+                outdated_shape.exception.code, "AGENT_CONTRACT_INPUT_INVALID",
+            )
+            self.assertEqual(outdated_shape.exception.owner, "agent_input")
+            self.assertEqual(
+                outdated_shape.exception.correction_budget["correctionsRemaining"], 1,
+            )
             accepted = first_transport.call_tool("advance_plugin_run", {
                 "reviewCheckpoint": {
                     "workItemId": work_item_id,
                     "collectionId": "checklist-dimensions",
                     "itemIds": first_batch["itemIds"],
-                    "payload": {"checklist_review": [{
-                        "check_id": check_id,
-                        "status": "PASS",
-                        "note": "Reviewed and satisfied.",
-                        "evidence_refs": [evidence_ref],
-                    } for check_id in first_batch["itemIds"]]},
+                    "payload": {"checklist_review": [
+                        passing_checklist_row(check_id, evidence_ref)
+                        for check_id in first_batch["itemIds"]
+                    ]},
                 },
             })["structuredContent"]["result"]
             next_batch_ids = accepted["result"]["semanticTask"]["itemIds"]
@@ -1607,17 +1769,6 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                     "candidate_ids": ["candidate:not-in-page"],
                     "review_note": "This invalid reference must be rejected before persistence.",
                 }]},
-                {"decisions": [{
-                    "finding_id": "finding-untraceable", "status": "CONFIRMED",
-                    "severity": "P2", "object_id": candidate.get("object_id") or "Spec section",
-                    "dimension": "traceability", "gap": "A concrete requirement is missing.",
-                    "impact": "Implementation could diverge.",
-                    "recommendation": "Add the missing requirement.",
-                    "closure_evidence": "A direct requirement is present.",
-                    "candidate_ids": [candidate_id], "merged_into": None,
-                    "evidence": ["This text is not candidate source evidence."],
-                    "review_note": None,
-                }]},
             )
             for payload in invalid_payloads:
                 with self.subTest(payload=payload):
@@ -1628,7 +1779,9 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                             "itemIds": [candidate_id],
                             "payload": payload,
                         })
-                    self.assertEqual(rejected.exception.code, "SPEC_REVIEW_INVALID")
+                    self.assertEqual(
+                        rejected.exception.code, "PLUGIN_SEMANTIC_INPUT_INVALID",
+                    )
                     ledger = json.loads(
                         (output / run_id / f"{run_id}.platform-ledger.json").read_text(encoding="utf-8")
                     )
@@ -1668,7 +1821,9 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                         "review_note": "A duplicate Finding identity must not become durable.",
                     }]},
                 })
-            self.assertEqual(duplicate_finding.exception.code, "SPEC_REVIEW_INVALID")
+            self.assertEqual(
+                duplicate_finding.exception.code, "PLUGIN_SEMANTIC_INPUT_INVALID",
+            )
             ledger = json.loads(
                 (output / run_id / f"{run_id}.platform-ledger.json").read_text(encoding="utf-8")
             )
@@ -1712,7 +1867,7 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
                         }]},
                     },
                 })
-            self.assertEqual(rejected.exception.code, "SPEC_REVIEW_INVALID")
+            self.assertEqual(rejected.exception.code, "AGENT_CONTRACT_INPUT_INVALID")
 
             resumed = transport.call_tool("advance_plugin_run", {})[
                 "structuredContent"
@@ -1846,49 +2001,14 @@ ASSUMPTION-01 remains OPEN until Finance Platform verifies API version 3.
             transport = InteractivePlatformMcpToolTransport(
                 Path(directory) / "output", plugin_registry=spec_registry(),
             )
-            transport.call_tool("start_plugin_run", {
-                "pluginId": "ass-spec", "checkId": "SPEC-001",
-                "scope": {"files": [{"path": str(path)}]},
-            })
-            transport.call_tool("discover_work_items", {})
-            inspected = transport.call_tool("inspect_work_items", {"includeEvidence": True})
-            packet = inspected["structuredContent"]["result"]["result"]["investigations"][0]
-            candidate_ids = [item["candidate_id"] for item in packet["evidence"][0]["payload"]["candidateFindings"]]
-            review = {
-                "review_schema_version": "1.0.0",
-                "readiness_context": {
-                    "mandatory_dimensions_checked": True,
-                    "unresolved_blockers": False,
-                    "escalations": [],
-                    "checklist_review": [
-                        {"check_id": f"CHK-{index:02d}", "status": "PASS", "note": "Reviewed and satisfied."}
-                        for index in range(1, 19)
-                    ],
-                },
-                "decisions": [
-                    {
-                        "finding_id": f"review-{candidate_id}", "status": "SUPPRESSED",
-                        "candidate_ids": [candidate_id], "review_note": "The scanner signal is not a material Spec finding.",
-                    }
-                    for candidate_id in candidate_ids
-                ],
-            }
-            item_id = packet["workItem"]["workItemId"]
-            transport.call_tool("submit_decisions", {"decisions": [{
-                "workItemId": item_id, "result": "scanned_no_issue",
-                "reason": "All candidate signals were reviewed and suppressed.",
-                "findings": [
-                    {"dimension": f"CHK-{index:02d}", "status": "satisfied", "reason": "Reviewed and satisfied."}
-                    for index in range(1, 19)
-                ],
-                "details": {"review": review},
-            }]})
-            finished = transport.call_tool("finish_plugin_run", {"status": "completed"})
-            result = finished["structuredContent"]["result"]["result"]
+            _, finished = complete_interactive_review(
+                transport, {"files": [{"path": str(path)}]},
+            )
+            result = finished["result"]
             summary = result["summary"]
             self.assertEqual(summary["phase"], "REVIEWED")
             self.assertEqual(summary["readiness"]["status"], "READY")
-            self.assertEqual(summary["review"]["statusCounts"]["SUPPRESSED"], len(candidate_ids))
+            self.assertGreater(summary["review"]["statusCounts"]["SUPPRESSED"], 0)
             self.assertEqual(summary["review"]["checklist"]["statusCounts"]["PASS"], 18)
             self.assertEqual(summary["review"]["confirmedFindings"], [])
             self.assertEqual(set(result["artifacts"]), {

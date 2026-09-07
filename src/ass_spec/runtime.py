@@ -561,6 +561,25 @@ class AssSpecPlugin:
         prior_checkpoints: Sequence[ReviewCheckpoint], packet: InvestigationPacket,
         check: CheckContract, context: PlatformContext,
     ) -> None:
+        """Expose one stable semantic error code to the strict Host boundary."""
+        try:
+            self._validate_review_checkpoint(
+                checkpoint, collection_items, prior_checkpoints, packet, check, context,
+            )
+        except PlatformContractError as error:
+            if error.code == "PLUGIN_SEMANTIC_INPUT_INVALID":
+                raise
+            raise PlatformContractError(
+                "PLUGIN_SEMANTIC_INPUT_INVALID",
+                error.message,
+                work_item_id=checkpoint.work_item_id,
+            ) from error
+
+    def _validate_review_checkpoint(
+        self, checkpoint: ReviewCheckpoint, collection_items: Sequence[Mapping[str, Any]],
+        prior_checkpoints: Sequence[ReviewCheckpoint], packet: InvestigationPacket,
+        check: CheckContract, context: PlatformContext,
+    ) -> None:
         """Reject malformed or untraceable semantic findings before persistence."""
         del collection_items, check, context
         from .review import (
@@ -578,12 +597,8 @@ class AssSpecPlugin:
             validate_checklist_reviews(
                 raw_checklist, packet, expected_check_ids=checkpoint.item_ids,
             )
-            if any(
-                isinstance(item, Mapping) and "applicability" in item
-                for item in raw_checklist
-            ):
-                from .review import _validate_strict_checklist_items
-                _validate_strict_checklist_items(raw_checklist)
+            from .review import _validate_strict_checklist_items
+            _validate_strict_checklist_items(raw_checklist)
             return
         if checkpoint.collection_id in {"candidate-findings", "document-navigation"}:
             raw_decisions = checkpoint.payload.get("decisions")
@@ -667,13 +682,27 @@ class AssSpecPlugin:
                     "crossDocumentScope": cross_scope,
                 },
             ),)
-        entries = scope.get("files", []) if isinstance(scope, dict) else scope
-        if isinstance(entries, (str, Path)):
-            entries = [entries]
+        if isinstance(scope, (str, Path)):
+            entries = [scope]
+        elif isinstance(scope, Mapping):
+            entries = scope.get("files")
+            if not isinstance(entries, (tuple, list)) or not entries:
+                _scope_error("Spec scope requires a non-empty files array")
+        else:
+            _scope_error("Spec scope must be an object containing a non-empty files array")
         items: list[WorkItem] = []
+        seen_paths: set[str] = set()
         for entry in entries or []:
+            if not isinstance(entry, (str, Path, Mapping)):
+                _scope_error("Each Spec file entry must be a path or object")
             config = {"path": entry} if isinstance(entry, (str, Path)) else dict(entry)
+            if not isinstance(config.get("path"), str) or not str(config["path"]).strip():
+                _scope_error("Each Spec file entry requires a non-empty path")
             path = Path(config["path"]).expanduser().resolve()
+            normalized = str(path)
+            if normalized in seen_paths:
+                _scope_error(f"Duplicate Spec file in scope: {normalized}")
+            seen_paths.add(normalized)
             raw = path.read_bytes()
             path_identity = _digest(str(path).encode())
             items.append(WorkItem(
@@ -1216,31 +1245,8 @@ class AssSpecPlugin:
             )
         assembled_context = dict(readiness_context)
         assembled_context["checklist_review"] = checklist_review
-        # The current Spec policy is v1.3.  A checkpointed review is a
-        # formal decision boundary, so silently assembling a legacy v1.2
-        # envelope would let an Agent omit the source-bound semantic fields
-        # and still publish a completed result.  Fail at the boundary with a
-        # repairable contract error instead of downgrading the review.
-        strict_review = bool(checklist_review) and all(
-            isinstance(item, Mapping)
-            and all(
-                field in item
-                for field in (
-                    "applicability", "observation", "gap", "impact",
-                    "recommendation", "owner", "next_action", "confidence",
-                )
-            )
-            for item in checklist_review
-        )
-        if not strict_review:
-            raise PlatformContractError(
-                "SPEC_REVIEW_SCHEMA_OUTDATED",
-                "Checkpointed Spec review must use review schema 1.3.0 and provide "
-                "applicability, observation, gap, impact, recommendation, owner, "
-                "next_action, and confidence for all 18 checklist dimensions",
-            )
         review_envelope: dict[str, Any] = {
-            "review_schema_version": "1.3.0" if strict_review else "1.2.0",
+            "review_schema_version": "1.3.0",
             "readiness_context": assembled_context,
             "decisions": decisions,
             "cross_document_review": cross_document_review,
@@ -1261,14 +1267,13 @@ class AssSpecPlugin:
                 )
             review_envelope["candidate_graph"] = render_candidate_evidence_graph(candidate_graph)
             validate_candidate_evidence_graph_projection(review_envelope["candidate_graph"])
-        if strict_review:
-            raw_context = packet.evidence[0].payload.get("documentContext") if packet.evidence else None
-            if not isinstance(raw_context, Mapping):
-                raise PlatformContractError(
-                    "SPEC_REVIEW_INVALID",
-                    "Strict v1.3 review requires a documentContext in the investigation packet",
-                )
-            review_envelope["document_context"] = _review_document_context(raw_context)
+        raw_context = packet.evidence[0].payload.get("documentContext") if packet.evidence else None
+        if not isinstance(raw_context, Mapping):
+            raise PlatformContractError(
+                "SPEC_REVIEW_INVALID",
+                "Strict v1.3 review requires a documentContext in the investigation packet",
+            )
+        review_envelope["document_context"] = _review_document_context(raw_context)
         return {
             "review": review_envelope,
             "result_delivery": _actionable_result_delivery(

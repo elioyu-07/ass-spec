@@ -336,13 +336,58 @@ class AssSpecEvaluationCorpusTest(unittest.TestCase):
             })["structuredContent"]["result"]["result"]
             packet = inspected["investigations"][0]
             self.assertEqual(packet["evidence"][0]["payload"]["candidateFindings"], [])
-            checklist = [{
-                "check_id": f"CHK-{index:02d}",
-                "status": "PASS",
-                "note": "The isolated strong corpus oracle marks this dimension satisfied.",
-            } for index in range(1, 19)]
-            transport.call_tool("submit_decisions", {"decisions": [{
-                "workItemId": packet["workItem"]["workItemId"],
+            work_item_id = packet["workItem"]["workItemId"]
+            source = transport.call_tool("expand_evidence_collection", {
+                "workItemId": work_item_id,
+                "collectionId": "source-sections",
+                "pageSize": 1,
+            })["structuredContent"]["result"]["result"]["items"][0]
+            evidence_ref = {
+                key: source[key] for key in (
+                    "source_chunk_id", "document_path", "source_digest",
+                    "start_line", "end_line",
+                )
+            }
+            contract_digest = started["result"]["agentContract"]["contractDigest"]
+            boundary = transport.call_tool("advance_plugin_run", {})[
+                "structuredContent"
+            ]["result"]
+            checklist = []
+            task = boundary["result"]["semanticTask"]
+            while task["kind"] == "review_evidence_items":
+                self.assertEqual(task["collectionId"], "checklist-dimensions")
+                batch = [{
+                    "check_id": check_id,
+                    "status": "PASS",
+                    "note": "The isolated strong corpus oracle marks this dimension satisfied.",
+                    "evidence_refs": [evidence_ref],
+                    "applicability": "APPLICABLE",
+                    "observation": "The dimension is satisfied by frozen corpus evidence.",
+                    "gap": "No material gap was observed for this dimension.",
+                    "impact": "No adverse impact is established by the reviewed evidence.",
+                    "recommendation": "Keep the current evidence-backed definition.",
+                    "owner": "Spec owner",
+                    "next_action": "Retain the evidence reference in the corpus.",
+                    "confidence": "high",
+                } for check_id in task["itemIds"]]
+                checklist.extend(batch)
+                boundary = transport.call_tool("advance_plugin_run", {
+                    "reviewCheckpoint": {
+                        "workItemId": work_item_id,
+                        "collectionId": task["collectionId"],
+                        "itemIds": task["itemIds"],
+                        "payload": {"checklist_review": batch},
+                        "contractDigest": contract_digest,
+                    },
+                })["structuredContent"]["result"]
+                task = boundary["result"]["semanticTask"]
+            finalization = {"readiness_context": {
+                "mandatory_dimensions_checked": True,
+                "unresolved_blockers": False,
+                "escalations": [],
+            }}
+            transport.call_tool("advance_plugin_run", {"decision": {
+                "workItemId": work_item_id,
                 "result": "scanned_no_issue",
                 "reason": "The strong corpus Case matches its isolated semantic oracle.",
                 "findings": [{
@@ -350,18 +395,9 @@ class AssSpecEvaluationCorpusTest(unittest.TestCase):
                     "status": "satisfied",
                     "reason": item["note"],
                 } for item in checklist],
-                "details": {"review": {
-                    "review_schema_version": "1.0.0",
-                    "readiness_context": {
-                        "mandatory_dimensions_checked": True,
-                        "unresolved_blockers": False,
-                        "escalations": [],
-                        "checklist_review": checklist,
-                    },
-                    "decisions": [],
-                }},
-            }]})
-            transport.call_tool("finish_plugin_run", {"status": "completed"})
+                "finalization": finalization,
+                "contractDigest": contract_digest,
+            }})
             ledger_path = output / started["runId"] / f"{started['runId']}.platform-ledger.json"
 
             actual = load_semantic_review_from_ledger(ledger_path)

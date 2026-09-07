@@ -818,6 +818,22 @@ def evaluate_review(proposal: DecisionProposal, packet: InvestigationPacket) -> 
         expected_status = "satisfied" if item["status"] == "PASS" else "violated" if item["status"] == "REWORK" else "conflicted" if item["status"] == "ESCALATE" else "unresolved"
         if finding_status.get(item["check_id"]) != expected_status:
             raise PlatformContractError("SPEC_REVIEW_INVALID", f"Finding status for {item['check_id']} does not match checklist review")
+    legacy_findings = [
+        {
+            "severity": item.get("severity"),
+            "code": str(item.get("dimension")),
+            "message": str(item.get("gap")),
+            "line": None,
+            "chapter": None,
+            "evidence": "\n".join(str(value) for value in item.get("evidence", ())),
+            "impact": str(item.get("impact")),
+            "recommendation": str(item.get("recommendation")),
+            "review_status": str(item.get("status")),
+            "finding_id": str(item.get("finding_id")),
+        }
+        for item in reviewed
+        if item.get("status") == "CONFIRMED"
+    ]
     return {
         "report_schema_version": "1.0.0",
         "pipeline": {"candidate_source": "deterministic_scanner", "reviewed_findings_present": True, "legacy_findings_projection": "confirmed_only"},
@@ -827,6 +843,7 @@ def evaluate_review(proposal: DecisionProposal, packet: InvestigationPacket) -> 
             "status_counts": {status: sum(item.get("status") == status for item in reviewed) for status in sorted(_STATUSES)},
         },
         "candidates": list(raw_candidates), "reviewed_findings": list(reviewed),
+        "findings": legacy_findings,
         "cross_document_scope": (
             payload.get("crossDocumentPacket", {}).get("scope")
             if isinstance(payload.get("crossDocumentPacket"), Mapping) else None

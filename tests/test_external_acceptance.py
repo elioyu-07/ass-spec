@@ -33,6 +33,16 @@ class AssSpecExternalJourneyTest(unittest.TestCase):
         run_step = next(item for item in result["steps"] if item["operation"] == "run")
         self.assertEqual(run_step["terminalStatus"], "completed")
         self.assertEqual(result["assertions"]["structuredSummary"], True)
+        self.assertTrue(result["assertions"]["strictContract"])
+        self.assertGreater(result["assertions"]["checkpointPages"], 4)
+        self.assertEqual(result["assertions"]["completedStrictRuns"], 3)
+        self.assertEqual(result["assertions"]["reviewedCollections"], [
+            "candidate-findings",
+            "checklist-dimensions",
+            "cross-document-relationships",
+            "document-navigation",
+        ])
+        self.assertEqual(result["assertions"]["agentRetries"], 0)
         self.assertFalse(result["assertions"]["htmlOutput"])
         self.assertTrue(result["assertions"]["ledgerPublished"])
         self.assertEqual(result["assertions"]["installedCount"], 0)

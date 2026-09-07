@@ -20,7 +20,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("evaluation/*", package_data)
         for name in ("manifest.json", "recognition.json", "policy.json", "checklist.json",
                      "authority.md", "self-check-checklist.md", "quality-standard.md",
-                     "spec-template.md", "nfr-catalog.md", "scope.schema.json"):
+                     "spec-template.md", "nfr-catalog.md", "scope.schema.json",
+                     "agent-boundaries.schema.json", "semantic-review.md"):
             self.assertTrue((PACKAGE_ROOT / name).is_file(), name)
         self.assertTrue((PACKAGE_ROOT / "evaluation" / "corpus.json").is_file())
 

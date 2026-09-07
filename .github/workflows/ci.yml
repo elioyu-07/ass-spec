@@ -15,7 +15,7 @@ jobs:
           python-version: "3.12"
       - name: Install platform and plugin
         run: |
-          pip install "assayer>=0.1.0,<0.2.0"
+          pip install "https://github.com/elioyu-07/Assayer/releases/download/v0.1.1/assayer-0.1.1-py3-none-any.whl"
           pip install -e .
       - name: Surface conformance
         run: assayer-plugin-surface-check src
@@ -23,5 +23,9 @@ jobs:
         run: assayer-plugin-check ass_spec:registration
       - name: Package conformance
         run: assayer-plugin-package-check .
+      - name: Build release wheel
+        run: python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+      - name: Complete release gate against exact wheel
+        run: assayer-plugin-release-check --source . dist/*.whl
       - name: Plugin tests
         run: python -m unittest discover -s tests -p 'test_*.py'
